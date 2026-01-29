@@ -5,7 +5,7 @@ Camera lens calibration and undistortion pipeline with a focus on visual interpr
 ## Overview
 
 DistortionLab provides tools for:
-1. **Intrinsic calibration** - Estimate lens distortion from a chessboard calibration video
+1. **Intrinsic calibration** - Estimate camera intrinsics (focal length, principal point, distortion) from a chessboard video
 2. **Undistortion** - Remove lens distortion from videos and images
 
 ## Requirements
