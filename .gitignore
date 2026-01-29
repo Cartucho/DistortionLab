@@ -209,3 +209,8 @@ __marimo__/
 input/
 output/
 .DS_store
+*.blend*
+*.mp4
+*.yaml
+*.png
+*.pdf
