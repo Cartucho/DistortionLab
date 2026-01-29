@@ -44,13 +44,17 @@ During the calibration aim to respect the following principles:
    - We want the chessboard to be as close as possible to the edges of the image. Prioritize getting frames with the inner corners of the chessboard close to the edge of the image.
    - All corners must remain visible in the frame.
 
+<p align="center">
 <img width="600" alt="Board positioning" src="https://github.com/user-attachments/assets/2579b466-bc02-4280-9e93-4477bad5a860" />
+</p>
 
 2. **Keep the board tilted!**
    - In most frames try keeping the board tilted at around 45 degrees to the lens, ideally between 30 and 70 degrees.
    - The least useful data would be if the calibration board is too far away and parallel to the lens.
 
+<p align="center">
 <img width="400" alt="Tilted board" src="https://github.com/user-attachments/assets/7e8db437-b17b-428b-a4a6-93a21607b8b7" />
+</p>
 
 **Other tips:**
 - Move the calibration board **slowly** to avoid motion blur. Motion blur reduces the quality of the calibration.
@@ -60,11 +64,15 @@ During the calibration aim to respect the following principles:
 
 Step 1 generates a distortion plot showing the estimated lens distortion model:
 
+<p align="center">
 <img width="500" alt="Distortion plot" src="https://github.com/user-attachments/assets/83cbe105-efc4-4f19-ae86-93668b2a31e8" />
+</p>
 
 It also generates a coverage plot showing which areas of the image were covered during calibration. **Aim for high coverage** (green = covered, red = missing) to get accurate distortion estimates, especially at the edges:
 
+<p align="center">
 <img width="500" alt="Coverage plot" src="https://github.com/user-attachments/assets/246d6c41-54b4-46f8-9908-e0b2c41c4b0e" />
+</p>
 
 ### Step 2: Undistortion
 
