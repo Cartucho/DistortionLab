@@ -26,7 +26,7 @@ Estimate camera intrinsics (focal length, principal point, distortion coefficien
 **Output:** Calibration YAML + distortion plot
 
 ```bash
-python step1_intrinsics.py
+uv run python step1_intrinsics.py
 ```
 
 Place calibration videos or image folders in `input/step1_intrinsics/` named as `camXX_*.mp4` (e.g., `cam01_intrinsics.mp4`) or `camXX_*/` image folders (e.g., `cam01_images/`).
@@ -84,7 +84,7 @@ Remove lens distortion from videos or image sequences using the calibration from
 **Output:** Undistorted videos (.mp4)
 
 ```bash
-python step2_undistortion.py
+uv run python step2_undistortion.py
 ```
 
 Place inputs in `input/step2_undistortion/`:
