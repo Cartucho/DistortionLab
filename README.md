@@ -11,7 +11,7 @@ DistortionLab provides tools for:
 ## Requirements
 
 ```bash
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 ```
 
 Additionally, [FFmpeg](https://ffmpeg.org/) must be installed and available in your PATH.
@@ -29,7 +29,7 @@ Estimate camera intrinsics (focal length, principal point, distortion coefficien
 python step1_intrinsics.py
 ```
 
-Place calibration videos in `input/step1_intrinsics/` named as `camXX_*.mp4` (e.g., `cam01_calibration.mp4`).
+Place calibration videos or image folders in `input/step1_intrinsics/` named as `camXX_*.mp4` (e.g., `cam01_intrinsics.mp4`) or `camXX_*/` image folders (e.g., `cam01_images/`).
 
 Options:
 - `--board_shape 5 8` - Chessboard size in squares (default: 5x8)
@@ -40,9 +40,9 @@ Options:
 
 During the calibration aim to respect the following principles:
 
-1. **Take close-ups!**
-   - We want the chessboard to be as close as possible to the edges of the image. Prioritize getting frames with the inner corners of the chessboard close to the edge of the image.
-   - All corners must remain visible in the frame.
+1. **Get close — but keep it sharp!**
+   - Move the board as close to the camera as you can, but stop as soon as you start seeing any blur. A sharp image from further away is better than a blurry close-up — blur degrades corner detection and corrupts the calibration.
+   - All corners must remain visible and sharp in the frame. *(On a few instances, don't be afraid to go near the edges — the code automatically filters out incomplete detections, so it's safe and encouraged for good coverage.)*
 
 <p align="center">
 <img width="600" alt="Board positioning" src="https://github.com/user-attachments/assets/2579b466-bc02-4280-9e93-4477bad5a860" />
@@ -59,6 +59,8 @@ During the calibration aim to respect the following principles:
 **Other tips:**
 - Move the calibration board **slowly** to avoid motion blur. Motion blur reduces the quality of the calibration.
 - Cover all areas of the image, especially corners and edges where distortion is strongest.
+- Ensure the board is well-lit and clearly readable. If you use additional lights, position them to avoid reflections or glare on the board surface.
+- A monitor can be used to display the board instead of a printed one, but verify that no aspect ratio scaling is applied — the squares must be truly square on screen.
 
 #### Example Output
 
@@ -99,9 +101,12 @@ The script automatically:
 ```
 DistortionLab/
 ├── input/
-│   ├── step1_intrinsics/        # Calibration videos
-│   │   └── cam01_calibration.mp4
-│   │   └── cam02_calibration.mp4
+│   ├── step1_intrinsics/        # Calibration videos or image folders
+│   │   └── cam01_intrinsics.mp4
+│   │   └── cam02_intrinsics.mp4
+│   │   └── cam03_images/
+│   │       ├── frame_001.png
+│   │       └── frame_002.png
 │   └── step2_undistortion/      # Videos/images to undistort
 │       ├── cam01_take1.mp4
 │       ├── cam01_take2.mp4

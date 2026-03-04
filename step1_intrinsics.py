@@ -329,20 +329,26 @@ def compute_additional_frame_indices(existing_indices, total_frames, num_additio
 
 
 def get_video_paths(path_dir_input):
-    """Get valid video file paths from a directory."""
-    video_paths = []
+    """Get valid video files and image folders from a directory."""
+    image_extensions = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp"}
+    inputs = []
     for f in os.listdir(path_dir_input):
-        file_path = os.path.join(path_dir_input, f)
-        if os.path.isfile(file_path):
-            cap = cv.VideoCapture(file_path)
+        item_path = os.path.join(path_dir_input, f)
+        if os.path.isfile(item_path):
+            cap = cv.VideoCapture(item_path)
             if cap.isOpened():
-                video_paths.append(file_path)
+                inputs.append(item_path)
                 cap.release()
+        elif os.path.isdir(item_path):
+            images = [x for x in os.listdir(item_path)
+                      if os.path.splitext(x)[1].lower() in image_extensions]
+            if images:
+                inputs.append(item_path)
 
-    if not video_paths:
-        raise Exception(f"No video files found in {path_dir_input}.")
+    if not inputs:
+        raise Exception(f"No video files or image folders found in {path_dir_input}.")
 
-    return sorted(video_paths)
+    return sorted(inputs)
 
 
 def get_calib_obj(args):
@@ -587,10 +593,23 @@ def get_calib_data(args, video_path, dir_calib_lens_output_data, dir_calib_lens_
     """Extract calibration data from video or from .npy files."""
     objp = get_calib_obj(args)
 
-    cap = cv.VideoCapture(video_path)
-    vid_width = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
-    vid_height = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv.CAP_PROP_FRAME_COUNT))
+    image_extensions = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp"}
+    is_image_folder = os.path.isdir(video_path)
+
+    if is_image_folder:
+        image_files = sorted([
+            os.path.join(video_path, f) for f in os.listdir(video_path)
+            if os.path.splitext(f)[1].lower() in image_extensions
+        ])
+        first_frame = cv.imread(image_files[0])
+        vid_height, vid_width = first_frame.shape[:2]
+        total_frames = len(image_files)
+        cap = None
+    else:
+        cap = cv.VideoCapture(video_path)
+        vid_width = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
+        vid_height = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv.CAP_PROP_FRAME_COUNT))
 
     if vid_width != 7680 or vid_height != 4320:
         msg = f"\n8K videos expected as input. Received {vid_width}x{vid_height} instead."
@@ -643,8 +662,12 @@ def get_calib_data(args, video_path, dir_calib_lens_output_data, dir_calib_lens_
 
             print(f"Processing {len(frames_to_process)} frames...")
             for frame_idx in tqdm(frames_to_process, desc="Processing frames"):
-                cap.set(cv.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
+                if is_image_folder:
+                    frame = cv.imread(image_files[frame_idx])
+                    ret = frame is not None
+                else:
+                    cap.set(cv.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, frame = cap.read()
                 if ret:
                     path_data = os.path.join(dir_calib_lens_output_data, f"{frame_idx:04d}")
                     batch.append((frame, path_data))
@@ -682,10 +705,11 @@ def get_calib_data(args, video_path, dir_calib_lens_output_data, dir_calib_lens_
     else:
         print(f"Already attempted {total_attempted} frames, no additional frames needed")
 
-    cap.release()
+    if cap is not None:
+        cap.release()
 
-    if len(pts_obj) < 25:
-        raise ValueError(f"Only {len(pts_obj)} valid detections found. Need at least 25 for calibration.")
+    if len(pts_obj) < 10:
+        raise ValueError(f"Only {len(pts_obj)} valid detections found. Need at least 10 for calibration.")
 
     # Validation phase: check geometric consistency of detected corners
     # Only run homography validation in no_distortion mode - with lens distortion,
@@ -1132,11 +1156,11 @@ def main():
     args.pattern_size = [args.board_shape[1] - 1, args.board_shape[0] - 1]
     print(f"Board shape: {args.board_shape[0]}x{args.board_shape[1]} squares -> {args.pattern_size[0]}x{args.pattern_size[1]} inner corners")
 
-    if args.desired_frames < 25:
-        print("Error: --desired_frames must be at least 25 for intrinsic calibration")
+    if args.desired_frames < 10:
+        print("Error: --desired_frames must be at least 10 for intrinsic calibration")
         exit()
-    if args.num_selected < 25:
-        print("Error: --num_selected must be at least 25 for intrinsic calibration")
+    if args.num_selected < 10:
+        print("Error: --num_selected must be at least 10 for intrinsic calibration")
         exit()
     if args.num_selected > args.desired_frames:
         print(f"Error: --num_selected ({args.num_selected}) cannot be larger than --desired_frames ({args.desired_frames})")
@@ -1146,6 +1170,7 @@ def main():
 
     # Collect calibration results for all cameras
     all_calibration_results = []
+    failed_cams = []
 
     for video_path in video_paths:
         video_name = os.path.basename(video_path)
@@ -1156,98 +1181,113 @@ def main():
                     "File name should start with the camID 'camXX_', where XX is a number. 'camXX' expected."
                 )
 
-        video_name_base = video_name.split(".")[0]
+        try:
+            video_name_base = video_name.split(".")[0]
 
-        dir_calib_lens_output = os.path.join(args.path_dir_output, video_name_base)
-        dir_calib_lens_output_data = os.path.join(
-            dir_calib_lens_output, "lens_calib_data"
-        )
-        calibration_file = os.path.join(dir_calib_lens_output, "calibration.yaml")
+            dir_calib_lens_output = os.path.join(args.path_dir_output, video_name_base)
+            dir_calib_lens_output_data = os.path.join(
+                dir_calib_lens_output, "lens_calib_data"
+            )
+            calibration_file = os.path.join(dir_calib_lens_output, "calibration.yaml")
 
-        # Check if we can skip this camera
-        if os.path.exists(calibration_file):
-            # Check if user wants more frames than we've already attempted
-            objp = get_calib_obj(args)
-            existing_pts_obj, _, existing_frame_indices = load_corners(dir_calib_lens_output_data, objp)
-            existing_outliers = load_outliers(dir_calib_lens_output)
-            existing_failed = load_failed_frames(dir_calib_lens_output_data)
-            # Total attempted = successful detections + outliers + failed
-            total_attempted = len(existing_frame_indices) + len(existing_failed)
-            valid_count = len([fi for fi in existing_frame_indices if fi not in existing_outliers])
+            # Check if we can skip this camera
+            if os.path.exists(calibration_file):
+                # Check if user wants more frames than we've already attempted
+                objp = get_calib_obj(args)
+                existing_pts_obj, _, existing_frame_indices = load_corners(dir_calib_lens_output_data, objp)
+                existing_outliers = load_outliers(dir_calib_lens_output)
+                existing_failed = load_failed_frames(dir_calib_lens_output_data)
+                # Total attempted = successful detections + outliers + failed
+                total_attempted = len(existing_frame_indices) + len(existing_failed)
+                valid_count = len([fi for fi in existing_frame_indices if fi not in existing_outliers])
 
-            if total_attempted >= args.desired_frames:
-                print(f"========== Skipping {video_name}, camID:{camID} (attempted {total_attempted} frames, {valid_count} valid) ==========")
-                # Load existing calibration data for all_cams.py
-                fs = cv.FileStorage(calibration_file, cv.FILE_STORAGE_READ)
-                K = fs.getNode("K").mat()
-                img_size = fs.getNode("ImgSizeWH").mat().ravel()
-                dist = fs.getNode("DistCoeffs").mat().ravel()
-                fs.release()
-                all_calibration_results.append({
-                    'camID': camID,
-                    'resolution_x': int(img_size[0]),
-                    'resolution_y': int(img_size[1]),
-                    'focal_length_x': float(K[0, 0]),
-                    'focal_length_y': float(K[1, 1]),
-                    'principal_point_x': float(K[0, 2]),
-                    'principal_point_y': float(K[1, 2]),
-                    'distortion_coeffs': [float(c) for c in dist[:5]],
-                })
-                continue
+                if total_attempted >= args.desired_frames:
+                    print(f"========== Skipping {video_name}, camID:{camID} (attempted {total_attempted} frames, {valid_count} valid) ==========")
+                    # Load existing calibration data for all_cams.py
+                    fs = cv.FileStorage(calibration_file, cv.FILE_STORAGE_READ)
+                    K = fs.getNode("K").mat()
+                    img_size = fs.getNode("ImgSizeWH").mat().ravel()
+                    dist = fs.getNode("DistCoeffs").mat().ravel()
+                    fs.release()
+                    all_calibration_results.append({
+                        'camID': camID,
+                        'resolution_x': int(img_size[0]),
+                        'resolution_y': int(img_size[1]),
+                        'focal_length_x': float(K[0, 0]),
+                        'focal_length_y': float(K[1, 1]),
+                        'principal_point_x': float(K[0, 2]),
+                        'principal_point_y': float(K[1, 2]),
+                        'distortion_coeffs': [float(c) for c in dist[:5]],
+                    })
+                    continue
+                else:
+                    print(f"========== Re-processing {video_name}, camID:{camID} (attempted {total_attempted}, want {args.desired_frames}) ==========")
             else:
-                print(f"========== Re-processing {video_name}, camID:{camID} (attempted {total_attempted}, want {args.desired_frames}) ==========")
-        else:
-            print(f"========== Processing {video_name}, camID:{camID} ==========")
-            # Clear stale calibration outputs when re-doing calibration
-            # Corner data (.npy) and failed_frames.json are kept (detection is independent)
-            # But outliers and calibration outputs should be fresh
-            stale_files = [
-                os.path.join(dir_calib_lens_output, "outliers.json"),
-                os.path.join(dir_calib_lens_output, "distortion_plot.png"),
-                os.path.join(dir_calib_lens_output, "coverage.png"),
-                os.path.join(dir_calib_lens_output, "calibration_metrics.json"),
-                os.path.join(dir_calib_lens_output, "selected_images.json"),
-            ]
-            for f in stale_files:
-                if os.path.exists(f):
-                    os.remove(f)
-                    print(f"  Cleared stale file: {os.path.basename(f)}")
+                print(f"========== Processing {video_name}, camID:{camID} ==========")
+                # Clear stale calibration outputs when re-doing calibration
+                # Corner data (.npy) and failed_frames.json are kept (detection is independent)
+                # But outliers and calibration outputs should be fresh
+                stale_files = [
+                    os.path.join(dir_calib_lens_output, "outliers.json"),
+                    os.path.join(dir_calib_lens_output, "distortion_plot.png"),
+                    os.path.join(dir_calib_lens_output, "coverage.png"),
+                    os.path.join(dir_calib_lens_output, "calibration_metrics.json"),
+                    os.path.join(dir_calib_lens_output, "selected_images.json"),
+                ]
+                for f in stale_files:
+                    if os.path.exists(f):
+                        os.remove(f)
+                        print(f"  Cleared stale file: {os.path.basename(f)}")
 
-        os.makedirs(dir_calib_lens_output_data, exist_ok=True)
+            os.makedirs(dir_calib_lens_output_data, exist_ok=True)
 
-        pts_obj, pts_img, vid_width, vid_height, camera_matrix, dist_coeffs = get_calib_data(
-            args, video_path, dir_calib_lens_output_data, dir_calib_lens_output,
-            save_debug_images=not args.no_debug_images,
-            no_distortion=args.no_distortion,
-            num_selected=args.num_selected
-        )
+            pts_obj, pts_img, vid_width, vid_height, camera_matrix, dist_coeffs = get_calib_data(
+                args, video_path, dir_calib_lens_output_data, dir_calib_lens_output,
+                save_debug_images=not args.no_debug_images,
+                no_distortion=args.no_distortion,
+                num_selected=args.num_selected
+            )
 
-        save_lens_calib(
-            args, dir_calib_lens_output, camID, pts_obj, pts_img, vid_width, vid_height, camera_matrix, dist_coeffs
-        )
+            save_lens_calib(
+                args, dir_calib_lens_output, camID, pts_obj, pts_img, vid_width, vid_height, camera_matrix, dist_coeffs
+            )
 
-        draw_coverage_image(dir_calib_lens_output, pts_img, vid_width, vid_height)
+            draw_coverage_image(dir_calib_lens_output, pts_img, vid_width, vid_height)
 
-        # Generate and save distortion plot (skip if no_distortion mode)
-        if not args.no_distortion:
-            visualizeDistortion(camera_matrix, dist_coeffs, vid_height, vid_width, camID, dir_calib_lens_output)
-        else:
-            print("  Skipping distortion plot (no_distortion mode)")
+            # Generate and save distortion plot (skip if no_distortion mode)
+            if not args.no_distortion:
+                visualizeDistortion(camera_matrix, dist_coeffs, vid_height, vid_width, camID, dir_calib_lens_output)
+            else:
+                print("  Skipping distortion plot (no_distortion mode)")
 
-        # Collect calibration results for all_cams.py
-        all_calibration_results.append({
-            'camID': camID,
-            'resolution_x': vid_width,
-            'resolution_y': vid_height,
-            'focal_length_x': float(camera_matrix[0, 0]),
-            'focal_length_y': float(camera_matrix[1, 1]),
-            'principal_point_x': float(camera_matrix[0, 2]),
-            'principal_point_y': float(camera_matrix[1, 2]),
-            'distortion_coeffs': [float(c) for c in dist_coeffs.ravel()[:5]],
-        })
+            # Collect calibration results for all_cams.py
+            all_calibration_results.append({
+                'camID': camID,
+                'resolution_x': vid_width,
+                'resolution_y': vid_height,
+                'focal_length_x': float(camera_matrix[0, 0]),
+                'focal_length_y': float(camera_matrix[1, 1]),
+                'principal_point_x': float(camera_matrix[0, 2]),
+                'principal_point_y': float(camera_matrix[1, 2]),
+                'distortion_coeffs': [float(c) for c in dist_coeffs.ravel()[:5]],
+            })
+
+        except Exception as e:
+            print(f"  ERROR: Failed to calibrate {camID}: {e}")
+            failed_cams.append((camID, str(e)))
 
     # Generate all_cams.py with all calibration results
     generate_all_cams_py(args.path_dir_output, all_calibration_results)
+
+    # Final summary
+    n_total = len(video_paths)
+    n_success = n_total - len(failed_cams)
+    print(f"\n{'='*60}")
+    print(f"Calibration complete: {n_success}/{n_total} cameras processed successfully.")
+    if failed_cams:
+        print("Failed cameras:")
+        for cam, reason in failed_cams:
+            print(f"  - {cam}: {reason}")
 
 
 if __name__ == "__main__":
