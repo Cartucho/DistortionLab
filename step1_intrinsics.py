@@ -8,8 +8,13 @@ from tqdm import tqdm
 import multiprocessing
 from path import Path
 import re
-import matplotlib.pyplot as plt
-from numpy.linalg import lstsq
+from visualization import (
+    draw_coverage_image,
+    draw_distortion_field,
+    draw_residual_grid,
+    draw_residual_normality,
+    draw_undistortion_grid,
+)
 
 
 def validate_homography(corners, pattern_size, img_diagonal, threshold_ratio=0.00136):
@@ -343,6 +348,15 @@ def get_video_paths(path_dir_input):
         raise Exception(f"No video files found in {path_dir_input}.")
 
     return sorted(video_paths)
+
+
+def load_video_frame(video_path, frame_idx):
+    """Load a single frame from a video."""
+    cap = cv.VideoCapture(video_path)
+    cap.set(cv.CAP_PROP_POS_FRAMES, int(frame_idx))
+    ret, frame = cap.read()
+    cap.release()
+    return frame if ret else None
 
 
 def get_calib_obj(args):
@@ -830,70 +844,7 @@ def get_calib_data(args, video_path, dir_calib_lens_output_data, dir_calib_lens_
     print(f"  Reprojection error: mean={metrics['reprojection_error']['mean']:.3f}px, "
           f"max={metrics['reprojection_error']['max']:.3f}px")
 
-    return selected_pts_obj, selected_pts_img, vid_width, vid_height, mtx, dist
-
-
-def draw_coverage_image(dir_calib_lens_output, pts_img, vid_width, vid_height, grid_size=8):
-    """Draw and save an image showing the coverage of the detected corners.
-
-    Shows an 8x8 grid with cells colored by coverage:
-    - Red = no coverage
-    - Green = has coverage (brighter = more points)
-    """
-    # Use the same coverage calculation as calculate_coverage_score
-    _, grid = calculate_coverage_score(pts_img, vid_width, vid_height, grid_size)
-
-    cell_width = vid_width / grid_size
-    cell_height = vid_height / grid_size
-
-    # Create the image
-    im = np.zeros((vid_height, vid_width, 3), dtype=np.uint8)
-
-    # Draw grid cells with color based on coverage
-    max_count = grid.max() if grid.max() > 0 else 1
-
-    for gy in range(grid_size):
-        for gx in range(grid_size):
-            x1 = int(gx * cell_width)
-            y1 = int(gy * cell_height)
-            x2 = int((gx + 1) * cell_width)
-            y2 = int((gy + 1) * cell_height)
-
-            count = grid[gy, gx]
-            if count == 0:
-                # No coverage - red
-                color = (40, 40, 180)  # BGR - dark red
-            else:
-                # Has coverage - green, intensity based on density
-                intensity = int(60 + 140 * (count / max_count))  # Range 60-200
-                color = (40, intensity, 40)  # BGR - green
-
-            cv.rectangle(im, (x1, y1), (x2, y2), color, -1)  # Filled rectangle
-
-    # Draw grid lines
-    for i in range(grid_size + 1):
-        x = int(i * cell_width)
-        cv.line(im, (x, 0), (x, vid_height), (100, 100, 100), 1)
-        y = int(i * cell_height)
-        cv.line(im, (0, y), (vid_width, y), (100, 100, 100), 1)
-
-    # Add coverage stats text
-    filled_cells = np.sum(grid > 0)
-    total_cells = grid_size * grid_size
-    text = f"Coverage: {filled_cells}/{total_cells} cells ({100*filled_cells/total_cells:.0f}%)"
-    cv.putText(im, text, (20, 50), cv.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3)
-
-    # Draw white rectangle around the image margin
-    cv.rectangle(im, (0, 0), (vid_width - 1, vid_height - 1), (255, 255, 255), 2)
-
-    # Draw corner points on top (bright green dots)
-    for corners in pts_img:
-        for corner in corners:
-            x, y = int(corner[0][0]), int(corner[0][1])
-            cv.circle(im, (x, y), 4, (0, 255, 0), -1)
-
-    cv.imwrite(str(Path(dir_calib_lens_output) / "coverage.png"), im)
-
+    return selected_pts_obj, selected_pts_img, selected_frame_indices, vid_width, vid_height, mtx, dist, rvecs, tvecs
 
 def save_calibration_results(filename, cam_calib_final):
     """Save calibration results to a file."""
@@ -1003,77 +954,6 @@ def extract_cam_id(f_name, allow_non_cam_videos=False):
     return camID
 
 
-def visualizeDistortion(K, D, h, w, camID, output_path, contour_levels=10, nstep=20):
-    """Generate and save a distortion plot for the camera."""
-    # Extract camera parameters
-    fx, fy = K[0, 0], K[1, 1]
-    cx, cy = K[0, 2], K[1, 2]
-
-    # Pad distortion coefficients to 14 elements
-    D = D.ravel()
-    d = np.zeros(14)
-    d[:D.size] = D
-    D = d
-    k1, k2, p1, p2, k3 = D[0], D[1], D[2], D[3], D[4]
-
-    # Create grid of pixel coordinates
-    u, v = np.meshgrid(
-        np.arange(0, w, nstep),
-        np.arange(0, h, nstep)
-    )
-
-    # Convert to homogeneous coordinates and project to normalized coords
-    b = np.array([u.ravel(), v.ravel(), np.ones(u.size)])
-    xyz = lstsq(K, b, rcond=None)[0]
-
-    xp = xyz[0, :] / xyz[2, :]
-    yp = xyz[1, :] / xyz[2, :]
-    r2 = xp**2 + yp**2
-    r4 = r2**2
-    r6 = r2**3
-
-    # Apply distortion model
-    coef = (1 + k1*r2 + k2*r4 + k3*r6) / (1 + D[5]*r2 + D[6]*r4 + D[7]*r6)
-    xpp = xp*coef + 2*p1*(xp*yp) + p2*(r2 + 2*xp**2) + D[8]*r2 + D[9]*r4
-    ypp = yp*coef + p1*(r2 + 2*yp**2) + 2*p2*(xp*yp) + D[10]*r2 + D[11]*r4
-
-    # Convert back to pixel coordinates
-    u2 = fx*xpp + cx
-    v2 = fy*ypp + cy
-
-    # Calculate displacement
-    du = u2.ravel() - u.ravel()
-    dv = v2.ravel() - v.ravel()
-    dr = np.hypot(du, dv).reshape(u.shape)
-
-    # Create plot
-    fig, ax = plt.subplots(figsize=(10, 8))
-
-    # Quiver plot showing displacement vectors
-    ax.quiver(u.ravel(), v.ravel(), du, -dv, color="dodgerblue", alpha=0.7)
-
-    # Mark image center and principal point
-    ax.plot(w/2, h/2, "x", markersize=10, label="Image center")
-    ax.plot(cx, cy, "^", markersize=10, label=f"Principal point ({cx:.1f}, {cy:.1f})")
-
-    # Contour plot showing magnitude of distortion
-    CS = ax.contour(u, v, dr, colors="black", levels=contour_levels)
-    ax.clabel(CS, inline=1, fontsize=8, fmt='%.0f px')
-
-    ax.set_aspect('equal', 'box')
-    ax.set_title(f"{camID} Distortion Model\nk1={k1:.4f}, k2={k2:.4f}, k3={k3:.4f}, p1={p1:.4f}, p2={p2:.4f}")
-    ax.set_xlabel("x (pixels)")
-    ax.set_ylabel("y (pixels)")
-    ax.set_ylim(max(v.ravel()), 0)  # Flip y-axis
-    ax.legend(loc='upper right')
-
-    # Save
-    plt.tight_layout()
-    out_img = os.path.join(output_path, "distortion_plot.png")
-    plt.savefig(out_img, dpi=150)
-    plt.close(fig)
-
-
 def main():
     script_path = Path(__file__).parent
     os.chdir(script_path)
@@ -1115,6 +995,11 @@ def main():
         type=int,
         default=50,
         help="Number of images to select for final calibration (default: 50)",
+    )
+    parser.add_argument(
+        "--visualizations",
+        action="store_true",
+        help="Generate diagnostic visualization images in the visualizations/ folder.",
     )
     parser.add_argument(
         "--allow_non_cam_videos",
@@ -1201,10 +1086,14 @@ def main():
             # Clear stale calibration outputs when re-doing calibration
             # Corner data (.npy) and failed_frames.json are kept (detection is independent)
             # But outliers and calibration outputs should be fresh
+            visualizations_dir = os.path.join(dir_calib_lens_output, "visualizations")
             stale_files = [
                 os.path.join(dir_calib_lens_output, "outliers.json"),
-                os.path.join(dir_calib_lens_output, "distortion_plot.png"),
-                os.path.join(dir_calib_lens_output, "coverage.png"),
+                os.path.join(visualizations_dir, "coverage.png"),
+                os.path.join(visualizations_dir, "residual_grid.png"),
+                os.path.join(visualizations_dir, "residual_normality.png"),
+                os.path.join(visualizations_dir, "distortion_field.png"),
+                os.path.join(visualizations_dir, "undistortion_grid.png"),
                 os.path.join(dir_calib_lens_output, "calibration_metrics.json"),
                 os.path.join(dir_calib_lens_output, "selected_images.json"),
             ]
@@ -1215,7 +1104,7 @@ def main():
 
         os.makedirs(dir_calib_lens_output_data, exist_ok=True)
 
-        pts_obj, pts_img, vid_width, vid_height, camera_matrix, dist_coeffs = get_calib_data(
+        pts_obj, pts_img, selected_frame_indices, vid_width, vid_height, camera_matrix, dist_coeffs, rvecs, tvecs = get_calib_data(
             args, video_path, dir_calib_lens_output_data, dir_calib_lens_output,
             save_debug_images=not args.no_debug_images,
             no_distortion=args.no_distortion,
@@ -1226,13 +1115,26 @@ def main():
             args, dir_calib_lens_output, camID, pts_obj, pts_img, vid_width, vid_height, camera_matrix, dist_coeffs
         )
 
-        draw_coverage_image(dir_calib_lens_output, pts_img, vid_width, vid_height)
+        if args.visualizations:
+            draw_coverage_image(dir_calib_lens_output, pts_img, vid_width, vid_height)
+            draw_residual_grid(
+                dir_calib_lens_output, pts_obj, pts_img,
+                camera_matrix, dist_coeffs, rvecs, tvecs, vid_width, vid_height
+            )
+            draw_residual_normality(
+                dir_calib_lens_output, pts_obj, pts_img,
+                camera_matrix, dist_coeffs, rvecs, tvecs
+            )
 
-        # Generate and save distortion plot (skip if no_distortion mode)
-        if not args.no_distortion:
-            visualizeDistortion(camera_matrix, dist_coeffs, vid_height, vid_width, camID, dir_calib_lens_output)
+            # Generate and save distortion visualizations (skip if no_distortion mode)
+            if not args.no_distortion:
+                draw_distortion_field(camera_matrix, dist_coeffs, vid_height, vid_width, camID, dir_calib_lens_output)
+                preview_frame = load_video_frame(video_path, selected_frame_indices[0]) if selected_frame_indices else None
+                draw_undistortion_grid(dir_calib_lens_output, preview_frame, camera_matrix, dist_coeffs)
+            else:
+                print("  Skipping distortion visualizations (no_distortion mode)")
         else:
-            print("  Skipping distortion plot (no_distortion mode)")
+            print("  Skipping visualizations (use --visualizations to generate them)")
 
         # Collect calibration results for all_cams.py
         all_calibration_results.append({
